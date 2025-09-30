@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Monatlicher Kosten-Planer</title>
+  <style>
+    :root{--bg:#f7f7fb;--card:#ffffff;--muted:#6b7280;--accent:#0f766e}
+    body{font-family:Inter,Inter-var,system-ui,Arial,sans-serif;background:var(--bg);margin:0;padding:24px;color:#111}
+    .wrap{max-width:980px;margin:0 auto}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    .card{background:var(--card);padding:16px;border-radius:12px;box-shadow:0 6px 18px rgba(16,24,40,0.06)}
+    form{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;align-items:end}
+    label{font-size:12px;color:var(--muted)}
+    input,select,button{padding:8px;border-radius:8px;border:1px solid #e6e6ef}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:10px;border-bottom:1px solid #f0f0f6;text-align:left}
+    th{font-size:13px;color:var(--muted)}
+    .actions button{margin-right:6px}
+    .totals{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+    .pill{background:#f3faf8;padding:8px 12px;border-radius:999px;color:var(--accent);font-weight:600}
+    .small{font-size:13px;color:var(--muted)}
+    @media (max-width:760px){form{grid-template-columns:1fr} th:nth-child(4),td:nth-child(4){display:none}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Monatlicher Kosten-Planer</h1>
+      <div class="small">Daten lokal im Browser gespeichert • Export/Import möglich</div>
+    </header>
+
+    <section class="card">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+        <div style="display:flex;gap:8px;align-items:center">
+          <label for="month" class="small">Monat wählen</label>
+          <input id="month" type="month" />
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="exportBtn">CSV exportieren</button>
+          <button id="importBtn">CSV importieren</button>
+          <input id="fileInput" type="file" accept="text/csv" style="display:none" />
+          <button id="clearBtn">Alles löschen</button>
+        </div>
+      </div>
+
+      <hr style="margin:12px 0;border:none;border-top:1px solid #f0f0f6">
+
+      <form id="entryForm">
+        <div>
+          <label>Betrag (€)</label>
+          <input id="amount" type="number" step="0.01" required />
+        </div>
+        <div>
+          <label>Kategorie</label>
+          <select id="category">
+            <option>Wohnen</option>
+            <option>Lebensmittel</option>
+            <option>Transport</option>
+            <option>Freizeit</option>
+            <option>Versicherung</option>
+            <option>Sonstiges</option>
+          </select>
+        </div>
+        <div>
+          <label>Datum</label>
+          <input id="date" type="date" required />
+        </div>
+        <div>
+          <label>Beschreibung</label>
+          <input id="desc" type="text" placeholder="z. B. Stromrechnung" />
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:8px;margin-top:8px">
+          <button type="submit">Hinzufügen</button>
+          <button type="button" id="updateBtn" style="display:none">Speichern</button>
+          <button type="reset">Zurücksetzen</button>
+        </div>
+      </form>
+
+      <div id="listArea">
+        <table id="entriesTable" class="small">
+          <thead>
+            <tr><th>Betrag</th><th>Kategorie</th><th>Datum</th><th>Beschreibung</th><th>Aktion</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <div class="totals">
+          <div class="pill">Summe: <span id="sum">0.00 €</span></div>
+          <div class="small">Einträge: <span id="count">0</span></div>
+          <div class="small">Durchschnitt: <span id="avg">0.00 €</span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="small" style="margin-top:12px">Möchtest du weitere Funktionen? (z.B. grafische Auswertung, Kategorien editierbar, Passwortschutz)</p>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'kostenPlaner_v1';
+    const monthInput = document.getElementById('month');
+    const amountInput = document.getElementById('amount');
+    const categoryInput = document.getElementById('category');
+    const dateInput = document.getElementById('date');
+    const descInput = document.getElementById('desc');
+    const entriesTable = document.querySelector('#entriesTable tbody');
+    const sumEl = document.getElementById('sum');
+    const countEl = document.getElementById('count');
+    const avgEl = document.getElementById('avg');
+    const exportBtn = document.getElementById('exportBtn');
+    const importBtn = document.getElementById('importBtn');
+    const fileInput = document.getElementById('fileInput');
+    const clearBtn = document.getElementById('clearBtn');
+    const entryForm = document.getElementById('entryForm');
+    const updateBtn = document.getElementById('updateBtn');
+
+    let state = loadState();
+    let editId = null;
+
+    // set default month to current
+    const now = new Date();
+    monthInput.value = now.toISOString().slice(0,7);
+
+    monthInput.addEventListener('change', render);
+    entryForm.addEventListener('submit', e=>{e.preventDefault(); addEntry();});
+    exportBtn.addEventListener('click', exportCSV);
+    importBtn.addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', handleFile);
+    clearBtn.addEventListener('click', ()=>{ if(confirm('Alle Daten löschen?')){state=[]; saveState(); render();}});
+
+    updateBtn.addEventListener('click', ()=>{ if(editId!==null) saveEdit();});
+
+    render();
+
+    function loadState(){
+      try{
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      }catch(e){return []}
+    }
+    function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+    function addEntry(){
+      const amount = parseFloat(amountInput.value);
+      if(isNaN(amount)) return alert('Bitte gültigen Betrag eingeben');
+      const entry = {
+        id: Date.now(),
+        amount: Math.round(amount*100)/100,
+        category: categoryInput.value,
+        date: dateInput.value || new Date().toISOString().slice(0,10),
+        desc: descInput.value || ''
+      };
+      state.push(entry); saveState(); entryForm.reset(); render();
+    }
+
+    function render(){
+      const month = monthInput.value; // YYYY-MM
+      entriesTable.innerHTML='';
+      const monthEntries = state.filter(e=> e.date.slice(0,7) === month);
+      monthEntries.sort((a,b)=> new Date(b.date)-new Date(a.date));
+      monthEntries.forEach(e=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML = `<td>${e.amount.toFixed(2)} €</td><td>${e.category}</td><td>${e.date}</td><td>${escapeHtml(e.desc)}</td><td class="actions"><button data-id="${e.id}" class="edit">Bearb.</button><button data-id="${e.id}" class="del">Löschen</button></td>`;
+        entriesTable.appendChild(tr);
+      });
+      document.querySelectorAll('.edit').forEach(b=>b.addEventListener('click',e=>startEdit(e.target.dataset.id)));
+      document.querySelectorAll('.del').forEach(b=>b.addEventListener('click',e=>{ if(confirm('Eintrag löschen?')) deleteEntry(e.target.dataset.id);}));
+
+      const sum = monthEntries.reduce((s,x)=> s + Number(x.amount), 0);
+      sumEl.textContent = sum.toFixed(2) + ' €';
+      countEl.textContent = monthEntries.length;
+      avgEl.textContent = (monthEntries.length? (sum/monthEntries.length).toFixed(2) : '0.00') + ' €';
+    }
+
+    function startEdit(id){
+      const e = state.find(x=>String(x.id)===String(id));
+      if(!e) return;
+      editId = e.id;
+      amountInput.value = e.amount; categoryInput.value = e.category; dateInput.value = e.date; descInput.value = e.desc;
+      updateBtn.style.display='inline-block';
+    }
+
+    function saveEdit(){
+      const idx = state.findIndex(x=>x.id===editId);
+      if(idx===-1) return;
+      state[idx].amount = Math.round(parseFloat(amountInput.value)*100)/100;
+      state[idx].category = categoryInput.value;
+      state[idx].date = dateInput.value;
+      state[idx].desc = descInput.value;
+      editId = null; updateBtn.style.display='none'; entryForm.reset(); saveState(); render();
+    }
+
+    function deleteEntry(id){ state = state.filter(x=>String(x.id)!==String(id)); saveState(); render(); }
+
+    function exportCSV(){
+      const month = monthInput.value;
+      const rows = state.filter(e=> e.date.slice(0,7)===month);
+      if(rows.length===0) return alert('Keine Einträge für den gewählten Monat');
+      let csv = 'id,amount,category,date,desc\n';
+      rows.forEach(r=>{ csv += `${r.id},${r.amount},"${r.category}",${r.date},"${(r.desc||'').replace(/\"/g,'""')}"\n`; });
+      const blob = new Blob([csv], {type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download = `kosten_${month}.csv`; a.click(); URL.revokeObjectURL(url);
+    }
+
+    function handleFile(e){
+      const f = e.target.files[0]; if(!f) return; const reader = new FileReader();
+      reader.onload = ()=>{
+        const text = reader.result; parseCSVImport(text);
+        fileInput.value='';
+      };
+      reader.readAsText(f,'utf-8');
+    }
+
+    function parseCSVImport(text){
+      // sehr einfacher CSV-Parser (erwartet id,amount,category,date,desc)
+      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l);
+      if(lines.length<2) return alert('Keine Daten gefunden');
+      const header = lines.shift().split(',').map(h=>h.toLowerCase());
+      const need = ['id','amount','category','date','desc'];
+      if(!need.every(n=> header.includes(n))) return alert('Unbekanntes CSV-Format');
+      lines.forEach(line=>{
+        // simple split by comma, handles quotes roughly
+        const parts = csvSplit(line);
+        const obj = { id: Number(parts[0]) || Date.now()+Math.random(), amount: parseFloat(parts[1]) || 0, category: parts[2] || 'Sonstiges', date: parts[3] || new Date().toISOString().slice(0,10), desc: parts[4] || '' };
+        // avoid duplicates by id
+        if(!state.some(s=>String(s.id)===String(obj.id))) state.push(obj);
+      });
+      saveState(); render(); alert('Import fertig');
+    }
+
+    function csvSplit(line){
+      const out=[]; let cur=''; let inQ=false;
+      for(let i=0;i<line.length;i++){
+        const ch=line[i];
+        if(ch==='"'){ if(inQ && line[i+1]==='"'){ cur+='"'; i++; } else inQ=!inQ; continue; }
+        if(ch===',' && !inQ){ out.push(cur); cur=''; continue; }
+        cur+=ch;
+      }
+      out.push(cur); return out.map(s=>s.replace(/^\s+|\s+$/g,''));
+    }
+
+    function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  </script>
+</body>
+</html>
